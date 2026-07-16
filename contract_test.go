@@ -90,6 +90,31 @@ func TestContractMethodsOnFixture(t *testing.T) {
 	}
 }
 
+// TestContractDecodePythonEncodedProfile is the true cross-language check: it
+// decodes bytes produced by the *Python* SDK's encoder (committed as
+// testdata/cross_python_encoded.b64), not a Go self-round-trip. If Python and Go
+// ever drift on the wire format, this fails.
+func TestContractDecodePythonEncodedProfile(t *testing.T) {
+	blob, err := os.ReadFile("testdata/cross_python_encoded.b64")
+	if err != nil {
+		t.Fatalf("read python-encoded blob: %v", err)
+	}
+
+	p, err := DecodeAndDecompressProfileFromBase64(string(blob))
+	if err != nil {
+		t.Fatalf("Go failed to decode Python-encoded profile: %v", err)
+	}
+	if p.AccID != uuid.MustParse(fixtureAccID) {
+		t.Errorf("accId = %v, want %s", p.AccID, fixtureAccID)
+	}
+	if p.LicensedResources == nil || len(p.LicensedResources.ToLicensesVector()) != fixtureRecords {
+		t.Errorf("licensed records mismatch decoding Python bytes")
+	}
+	if p.TenantsOwnership == nil || len(p.TenantsOwnership.ToOwnershipVector()) != 1 {
+		t.Errorf("tenant ownership mismatch decoding Python bytes")
+	}
+}
+
 func TestContractRoundTripFixture(t *testing.T) {
 	var p Profile
 	if err := json.Unmarshal(readFixture(t), &p); err != nil {
