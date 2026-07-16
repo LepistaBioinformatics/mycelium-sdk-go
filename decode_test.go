@@ -11,8 +11,8 @@ import (
 func fullProfile() Profile {
 	first := "Ada"
 	return Profile{
-		Owners: []Owner{{ID: uuid.New(), Email: "ada@example.com", FirstName: &first, IsPrincipal: true}},
-		AccID:  uuid.New(),
+		Owners:  []Owner{{ID: uuid.New(), Email: "ada@example.com", FirstName: &first, IsPrincipal: true}},
+		AccID:   uuid.New(),
 		IsStaff: false,
 		LicensedResources: &LicensedResources{Records: []LicensedResource{
 			res(tenantA, accX, "admin", PermissionWrite),
