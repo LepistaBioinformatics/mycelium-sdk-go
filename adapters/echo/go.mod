@@ -3,7 +3,7 @@ module github.com/LepistaBioinformatics/mycelium-sdk-go/adapters/echo
 go 1.23
 
 require (
-	github.com/LepistaBioinformatics/mycelium-sdk-go v0.0.0-00010101000000-000000000000
+	github.com/LepistaBioinformatics/mycelium-sdk-go v0.1.0
 	github.com/google/uuid v1.6.0
 	github.com/labstack/echo/v4 v4.12.0
 )
