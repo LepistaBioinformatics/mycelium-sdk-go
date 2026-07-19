@@ -1,6 +1,6 @@
 module github.com/LepistaBioinformatics/mycelium-sdk-go/adapters/echo
 
-go 1.23
+go 1.25.0
 
 require (
 	github.com/LepistaBioinformatics/mycelium-sdk-go v0.1.0
@@ -15,10 +15,10 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
-	golang.org/x/crypto v0.22.0 // indirect
-	golang.org/x/net v0.24.0 // indirect
-	golang.org/x/sys v0.19.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )
 
 // The root SDK module is developed in-tree. This replace is honored only when
