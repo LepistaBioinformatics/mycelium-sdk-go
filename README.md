@@ -137,6 +137,61 @@ e.GET("/whoami", func(c echo.Context) error {
 All three adapters share the same environment-gated behavior (dev-tolerant; `403` on
 missing and `401` on undecodable headers in production) and expose `FromContext`.
 
+## Verifying the profile signature
+
+If your service can be reached without going through the gateway, enable verification so
+forged `x-mycelium-profile` headers are rejected. The gateway signs the exact profile header
+with Ed25519 (`x-mycelium-profile-signature`, compact JWS); the SDK verifies it locally with
+the gateway public key, using only the Go standard library.
+
+Set the public key **after** the gateway is already signing:
+
+```bash
+export MYC_PROFILE_PUBLIC_KEY_1="$(cat profile-signing-v1.pub.pem)"
+```
+
+| Variable | Meaning |
+|---|---|
+| `MYC_PROFILE_PUBLIC_KEY_<version>` | Gateway public key (PEM SPKI) trusted for `kid = <version>`. Any such variable enables verification |
+| `MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS` | Accepted clock difference, default `60` |
+| `MYC_PROFILE_SIGNATURE_AUDIENCE` | Optional. When set, the `aud` claim must equal it |
+
+Load the configuration at startup so an invalid value stops the service:
+
+```go
+verifier, err := mycelium.ConfigureProfileSignature()
+if err != nil {
+    log.Fatal(err) // *mycelium.ProfileSignatureConfigurationError
+}
+
+handler := myceliumhttp.Middleware(
+    myceliumhttp.WithProfileSignatureVerifier(verifier), // optional: loaded once from the environment otherwise
+    myceliumhttp.WithSignatureRejectionListener(func(reason string) {
+        log.Printf("profile signature rejected: %s", reason) // log-safe reason, never the token
+    }),
+)(mux)
+```
+
+With verification enabled, every adapter (`nethttp`, `gin`, `echo`) verifies **before**
+decoding, in every environment (the development leniency does not apply): a rejected
+signature answers `403 Unable to verify Mycelium profile`, a configuration or internal error a
+generic `500`. Without any public key, the adapters keep the behavior above.
+
+To verify outside an HTTP adapter:
+
+```go
+profile, err := verifier.VerifyAndDecodeProfile(profileHeader, signatureHeader)
+var rejected *mycelium.ProfileSignatureError
+if errors.As(err, &rejected) {
+    // rejected.Reason: missing_signature, unknown_key, invalid_signature,
+    // timestamp_out_of_tolerance, profile_hash_mismatch, audience_mismatch, ...
+}
+```
+
+The verifier is tested against the cross-language contract vectors produced by the gateway
+(`testdata/profile-signature/vectors.json`, copied byte for byte), the same corpus used by
+the Python, JavaScript and Rust verifiers.
+
 ## Error handling
 
 All SDK errors embed `*MyceliumError` (`Message`, `Code`, `ExpTrue`) and support
@@ -147,6 +202,8 @@ All SDK errors embed `*MyceliumError` (`Message`, `Code`, `ExpTrue`) and support
 | `*ProfileDecodingError` | `MYC00020` | `DecodeAndDecompressProfileFromBase64` on any decode failure |
 | `*InsufficientLicensesError` | `MYC00019` | `GetRelatedAccountOrError` when licensed resources are present but empty |
 | `*InsufficientPrivilegesError` | `MYC00019` | Any method requiring a privilege the profile lacks (carries `FilteringState`) |
+| `*ProfileSignatureError` | `MYC_PROFILE_SIGNATURE_INVALID` | Signature verification; carries a log-safe `Reason` |
+| `*ProfileSignatureConfigurationError` | `MYC_PROFILE_SIGNATURE_CONFIG_INVALID` | `ConfigureProfileSignature` / `LoadProfileSignatureVerifier` on an invalid setting |
 
 ```go
 var decErr *mycelium.ProfileDecodingError
