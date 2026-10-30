@@ -20,4 +20,28 @@ const (
 	DefaultConnectionStringKey = "x-mycelium-connection-string"
 	// DefaultTenantIDKey carries the resolved tenant id.
 	DefaultTenantIDKey = "x-mycelium-tenant-id"
+	// DefaultProfileSignatureKey carries the gateway's compact JWS (EdDSA)
+	// over the exact DefaultProfileKey value.
+	DefaultProfileSignatureKey = "x-mycelium-profile-signature"
+)
+
+// Profile signature verification settings, shared with the gateway and the
+// Python and JavaScript SDKs.
+const (
+	// ProfilePublicKeyEnvPrefix names the trusted Ed25519 SPKI PEM public
+	// keys: MYC_PROFILE_PUBLIC_KEY_<version>. Any such variable enables
+	// verification.
+	ProfilePublicKeyEnvPrefix = "MYC_PROFILE_PUBLIC_KEY_"
+	// ProfileSignatureToleranceEnv optionally overrides the iat tolerance.
+	ProfileSignatureToleranceEnv = "MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS"
+	// ProfileSignatureAudienceEnv optionally sets the expected aud claim.
+	ProfileSignatureAudienceEnv = "MYC_PROFILE_SIGNATURE_AUDIENCE"
+	// DefaultProfileSignatureToleranceSeconds is the symmetric, inclusive
+	// iat tolerance.
+	DefaultProfileSignatureToleranceSeconds uint64 = 60
+	// MaxProfileSignatureBytes bounds the accepted signature header.
+	MaxProfileSignatureBytes = 4096
+	// MaxSafeTimestampSeconds is the largest integer every SDK represents
+	// exactly (2^53 - 1).
+	MaxSafeTimestampSeconds uint64 = 9_007_199_254_740_991
 )
