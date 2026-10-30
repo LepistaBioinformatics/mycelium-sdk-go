@@ -16,6 +16,8 @@ const ContextKey = "mycelium_profile"
 
 type config struct {
 	environment string
+	verifier    *mycelium.ProfileSignatureVerifier
+	onRejected  func(reason string)
 }
 
 // Option configures the middleware.
@@ -37,11 +39,38 @@ func (c *config) resolvedEnvironment() string {
 	return "development"
 }
 
+// WithProfileSignatureVerifier sets the signature verifier explicitly (for
+// example the one returned by mycelium.ConfigureProfileSignature at startup).
+// When unset, the verifier is loaded once from the MYC_PROFILE_PUBLIC_KEY_*
+// environment; with no public key configured, verification is disabled.
+func WithProfileSignatureVerifier(verifier *mycelium.ProfileSignatureVerifier) Option {
+	return func(c *config) { c.verifier = verifier }
+}
+
+// WithSignatureRejectionListener receives the log-safe reason of every
+// refused signature (never the token). Clients only see a generic detail.
+func WithSignatureRejectionListener(listener func(reason string)) Option {
+	return func(c *config) { c.onRejected = listener }
+}
+
+func (c *config) enforceSignature(header http.Header) mycelium.SignatureEnforcement {
+	outcome := mycelium.EnforceProfileSignature(header, c.verifier)
+	if outcome.Reason != "" && c.onRejected != nil {
+		c.onRejected(outcome.Reason)
+	}
+	return outcome
+}
+
 // Middleware returns Echo middleware that decodes the profile header and stores
 // the resulting *mycelium.Profile in the context.
 //
 // In development a missing or undecodable header is tolerated. In any other
 // environment a missing header responds 403 and an undecodable header 401.
+//
+// When signature verification is enabled (any MYC_PROFILE_PUBLIC_KEY_* or an
+// explicit verifier), the profile is authenticated first in every
+// environment: a rejected signature answers 403 and a configuration or
+// internal error 500, both with generic details.
 func Middleware(opts ...Option) echo.MiddlewareFunc {
 	cfg := &config{}
 	for _, o := range opts {
@@ -51,6 +80,14 @@ func Middleware(opts ...Option) echo.MiddlewareFunc {
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
+			if outcome := cfg.enforceSignature(c.Request().Header); outcome.Enabled {
+				if outcome.Profile == nil {
+					return c.JSON(outcome.Status, map[string]string{"detail": outcome.Detail})
+				}
+				c.Set(ContextKey, outcome.Profile)
+				return next(c)
+			}
+
 			raw := c.Request().Header.Get(mycelium.DefaultProfileKey)
 
 			if raw == "" {
