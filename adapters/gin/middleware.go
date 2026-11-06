@@ -3,6 +3,7 @@
 package myceliumgin
 
 import (
+	"context"
 	"net/http"
 	"os"
 
@@ -40,9 +41,11 @@ func (c *config) resolvedEnvironment() string {
 }
 
 // WithProfileSignatureVerifier sets the signature verifier explicitly (for
-// example the one returned by mycelium.ConfigureProfileSignature at startup).
-// When unset, the verifier is loaded once from the MYC_PROFILE_PUBLIC_KEY_*
-// environment; with no public key configured, verification is disabled.
+// example the one returned by mycelium.ConfigureProfileSignature at startup;
+// the gateway JWKS is downloaded on the first signed request unless the
+// service called Prefetch on it). When unset, the verifier is
+// loaded once from the environment (MYCELIUM_JWKS_URL); without that
+// variable, verification is disabled.
 func WithProfileSignatureVerifier(verifier *mycelium.ProfileSignatureVerifier) Option {
 	return func(c *config) { c.verifier = verifier }
 }
@@ -53,8 +56,8 @@ func WithSignatureRejectionListener(listener func(reason string)) Option {
 	return func(c *config) { c.onRejected = listener }
 }
 
-func (c *config) enforceSignature(header http.Header) mycelium.SignatureEnforcement {
-	outcome := mycelium.EnforceProfileSignature(header, c.verifier)
+func (c *config) enforceSignature(ctx context.Context, header http.Header) mycelium.SignatureEnforcement {
+	outcome := mycelium.EnforceProfileSignature(ctx, header, c.verifier)
 	if outcome.Reason != "" && c.onRejected != nil {
 		c.onRejected(outcome.Reason)
 	}
@@ -67,8 +70,8 @@ func (c *config) enforceSignature(header http.Header) mycelium.SignatureEnforcem
 // In development a missing or undecodable header is tolerated. In any other
 // environment a missing header aborts with 403 and an undecodable header with 401.
 //
-// When signature verification is enabled (any MYC_PROFILE_PUBLIC_KEY_* or an
-// explicit verifier), the profile is authenticated first in every
+// When signature verification is enabled (MYCELIUM_JWKS_URL or an explicit
+// verifier), the profile is authenticated first in every
 // environment: a rejected signature answers 403 and a configuration or
 // internal error 500, both with generic details.
 func Middleware(opts ...Option) gin.HandlerFunc {
@@ -79,7 +82,7 @@ func Middleware(opts ...Option) gin.HandlerFunc {
 	development := cfg.resolvedEnvironment() == "development"
 
 	return func(c *gin.Context) {
-		if outcome := cfg.enforceSignature(c.Request.Header); outcome.Enabled {
+		if outcome := cfg.enforceSignature(c.Request.Context(), c.Request.Header); outcome.Enabled {
 			if outcome.Profile == nil {
 				c.AbortWithStatusJSON(outcome.Status, gin.H{"detail": outcome.Detail})
 				return

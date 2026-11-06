@@ -1,10 +1,17 @@
 package mycelium
 
 import (
+	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 )
+
+// unverifiedSignatureWarned records that the "signed profile but
+// verification disabled" warning was logged (once per process).
+var unverifiedSignatureWarned atomic.Bool
 
 // Generic client-facing details. The detailed reason is never returned to
 // clients; adapters only hand it to an optional rejection listener.
@@ -41,8 +48,13 @@ type SignatureEnforcement struct {
 //
 // verifier, when non-nil, is used as is; otherwise the process verifier is
 // loaded once from the environment (GetProfileSignatureVerifier) and an
-// invalid configuration fails closed with 500.
-func EnforceProfileSignature(header http.Header, verifier *ProfileSignatureVerifier) SignatureEnforcement {
+// invalid configuration fails closed with 500. ctx bounds a JWKS refresh
+// triggered by this request (the request context).
+//
+// When verification is disabled and the request carries a signature, a
+// warning is logged once per process: the usual cause is a service that
+// forgot MYCELIUM_JWKS_URL.
+func EnforceProfileSignature(ctx context.Context, header http.Header, verifier *ProfileSignatureVerifier) SignatureEnforcement {
 	if verifier == nil {
 		loaded, err := GetProfileSignatureVerifier()
 		if err != nil {
@@ -51,10 +63,11 @@ func EnforceProfileSignature(header http.Header, verifier *ProfileSignatureVerif
 		verifier = loaded
 	}
 	if verifier == nil {
+		warnWhenSignatureIsIgnored(header)
 		return SignatureEnforcement{}
 	}
 
-	profile, err := verifyRequestHeaders(header, verifier)
+	profile, err := verifyRequestHeaders(ctx, header, verifier)
 	var rejection *ProfileSignatureError
 	if errors.As(err, &rejection) {
 		return refused(http.StatusForbidden, SignatureRejectionDetail, rejection.Reason)
@@ -69,7 +82,15 @@ func refused(status int, detail, reason string) SignatureEnforcement {
 	return SignatureEnforcement{Enabled: true, Status: status, Detail: detail, Reason: reason}
 }
 
-func verifyRequestHeaders(header http.Header, verifier *ProfileSignatureVerifier) (*Profile, error) {
+func warnWhenSignatureIsIgnored(header http.Header) {
+	if header.Get(DefaultProfileSignatureKey) == "" || !unverifiedSignatureWarned.CompareAndSwap(false, true) {
+		return
+	}
+	slog.Warn("received a signed profile but "+ProfileJWKSURLEnv+" is not set; the signature is not verified",
+		"event", "profile_signature.verify", "outcome", "skipped")
+}
+
+func verifyRequestHeaders(ctx context.Context, header http.Header, verifier *ProfileSignatureVerifier) (*Profile, error) {
 	profileHeader, err := singleHeaderValue(header, DefaultProfileKey, ReasonMissingProfile)
 	if err != nil {
 		return nil, err
@@ -78,7 +99,7 @@ func verifyRequestHeaders(header http.Header, verifier *ProfileSignatureVerifier
 	if err != nil {
 		return nil, err
 	}
-	return verifier.VerifyAndDecodeProfile(profileHeader, signatureHeader)
+	return verifier.VerifyAndDecodeProfile(ctx, profileHeader, signatureHeader)
 }
 
 // singleHeaderValue returns the one value of a header, refusing duplicates.

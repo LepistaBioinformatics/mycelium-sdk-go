@@ -126,9 +126,10 @@ func NewProfileSignatureError(reason string) *ProfileSignatureError {
 func (e *ProfileSignatureError) Unwrap() error { return e.MyceliumError }
 
 // ProfileSignatureConfigurationError is raised when a verification setting is
-// present but invalid. Any MYC_PROFILE_PUBLIC_KEY_* variable means
-// "verification requested": a malformed one must stop the service instead of
-// silently disabling verification. The message names variables, never values.
+// present but invalid, when MYC_PROFILE_SIGNATURE_AUDIENCE is missing while
+// MYCELIUM_JWKS_URL is set, or when the gateway profile JWKS is unsafe or
+// malformed. A malformed setting must stop the service instead of silently
+// disabling verification. The message names variables, never values.
 type ProfileSignatureConfigurationError struct {
 	*MyceliumError
 }

@@ -1,6 +1,7 @@
 package myceliumgin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	mycelium "github.com/LepistaBioinformatics/mycelium-sdk-go"
 	"github.com/gin-gonic/gin"
@@ -100,7 +102,8 @@ type signatureCorpus struct {
 }
 
 // signedFixture returns the first (valid) contract vector and a verifier
-// trusting key 1 with a tolerance wide enough for its fixed clock.
+// whose JWKS is the document the gateway publishes (keys 1 and 2), with a
+// tolerance wide enough for the vector's fixed clock.
 func signedFixture(t *testing.T) (string, string, *mycelium.ProfileSignatureVerifier) {
 	t.Helper()
 	raw, err := os.ReadFile("../../testdata/profile-signature/vectors.json")
@@ -112,13 +115,33 @@ func signedFixture(t *testing.T) (string, string, *mycelium.ProfileSignatureVeri
 		t.Fatal(err)
 	}
 	verifier, err := mycelium.LoadProfileSignatureVerifierFromEnv(map[string]string{
-		mycelium.ProfilePublicKeyEnvPrefix + "1": corpus.PublicKeys["1"],
-		mycelium.ProfileSignatureToleranceEnv:    strconv.FormatUint(mycelium.MaxSafeTimestampSeconds, 10),
-	})
+		mycelium.ProfileJWKSURLEnv:            "https://gateway.test/jwks.json",
+		mycelium.ProfileSignatureAudienceEnv:  "billing-api",
+		mycelium.ProfileSignatureToleranceEnv: strconv.FormatUint(mycelium.MaxSafeTimestampSeconds, 10),
+	}, mycelium.WithJWKSFetcher(publishedJWKS(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return corpus.Vectors[0].ProfileHeader, corpus.Vectors[0].Signature, verifier
+}
+
+// publishedJWKS serves the gateway-published JWKS of the shared fixture.
+func publishedJWKS(t *testing.T) mycelium.ProfileJWKSFetcher {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/profile-signature/jwks-vectors.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Published string `json:"published"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	return func(context.Context, string) (mycelium.FetchedProfileJWKS, error) {
+		keys, err := mycelium.ParseTrustedProfileKeys([]byte(fixture.Published))
+		return mycelium.FetchedProfileJWKS{Keys: keys, MaxAge: time.Hour}, err
+	}
 }
 
 func serveSigned(opts []Option, header http.Header) (*httptest.ResponseRecorder, *mycelium.Profile) {
@@ -188,7 +211,8 @@ func TestTamperedProfileIsRefused(t *testing.T) {
 func TestInvalidSignatureConfigurationFailsClosed(t *testing.T) {
 	mycelium.ResetProfileSignatureConfiguration()
 	t.Cleanup(mycelium.ResetProfileSignatureConfiguration)
-	t.Setenv("MYC_PROFILE_PUBLIC_KEY_1", "not a key")
+	// Verification requested without the mandatory audience.
+	t.Setenv(mycelium.ProfileJWKSURLEnv, "https://gateway.test/jwks.json")
 
 	rec, _ := serveSigned([]Option{WithEnvironment("development")}, http.Header{})
 

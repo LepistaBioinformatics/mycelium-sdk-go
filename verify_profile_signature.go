@@ -23,11 +23,13 @@ import (
 //     version as kid in the protected header;
 //   - claims {iat, ph, aud}: ph is the unpadded Base64URL SHA-256 of the exact
 //     x-mycelium-profile value; iat is checked against a symmetric, inclusive
-//     tolerance window; aud is compared only when an audience is configured.
+//     tolerance window; aud is compared with the configured audience
+//     (mandatory for a configured downstream, see ProfileSignatureVerifier).
 //
 // Checks run in a fixed precedence so every verifier reports the same reason.
 // The profile is only decoded after the signature, claims, time window and
-// hash are accepted. No network, file or environment access happens here.
+// hash are accepted. No network, file or environment access happens here;
+// the keys come from the JWKS cache of ProfileSignatureVerifier.
 
 var (
 	forbiddenHeaderMembers = []string{"crit", "b64", "jku", "jwk", "x5u", "x5c"}
@@ -44,16 +46,21 @@ func ProfileHeaderHash(profileHeader string) string {
 	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-// VerifyProfileSignature verifies that signatureHeader authenticates
-// profileHeader at the current time. It returns a *ProfileSignatureError
-// with a stable Reason on rejection and does not decode the profile.
-func (v *ProfileSignatureVerifier) VerifyProfileSignature(profileHeader, signatureHeader string) error {
-	return v.VerifyProfileSignatureAt(profileHeader, signatureHeader, currentSeconds())
+// signatureRules is one verification pass: the trusted keys at an instant,
+// the tolerance and the optional expected audience. Immutable. The
+// JWKS-backed ProfileSignatureVerifier builds one per request from its
+// cached keys; the contract tests build one directly (with or without an
+// audience, so the shared vectors exercise both cases).
+type signatureRules struct {
+	keys             *TrustedProfileKeys
+	toleranceSeconds uint64
+	expectedAudience *string
 }
 
-// VerifyProfileSignatureAt is VerifyProfileSignature with an explicit clock,
-// in Unix seconds.
-func (v *ProfileSignatureVerifier) VerifyProfileSignatureAt(profileHeader, signatureHeader string, nowSeconds uint64) error {
+// verifyAt checks that signatureHeader authenticates profileHeader at
+// nowSeconds. It returns a *ProfileSignatureError with a stable Reason on
+// rejection and does not decode the profile.
+func (r signatureRules) verifyAt(profileHeader, signatureHeader string, nowSeconds uint64) error {
 	if profileHeader == "" {
 		return NewProfileSignatureError(ReasonMissingProfile)
 	}
@@ -62,7 +69,7 @@ func (v *ProfileSignatureVerifier) VerifyProfileSignatureAt(profileHeader, signa
 	if err != nil {
 		return err
 	}
-	key, err := v.selectKey(parts[0])
+	key, err := r.selectKey(parts[0])
 	if err != nil {
 		return err
 	}
@@ -74,18 +81,13 @@ func (v *ProfileSignatureVerifier) VerifyProfileSignatureAt(profileHeader, signa
 	if err != nil {
 		return err
 	}
-	return v.checkClaims(claims, profileHeader, nowSeconds)
+	return r.checkClaims(claims, profileHeader, nowSeconds)
 }
 
-// VerifyAndDecodeProfile verifies the signature, then decodes the profile
+// verifyAndDecodeAt verifies the signature, then decodes the profile
 // (invalid_profile when the authenticated header does not decode).
-func (v *ProfileSignatureVerifier) VerifyAndDecodeProfile(profileHeader, signatureHeader string) (*Profile, error) {
-	return v.VerifyAndDecodeProfileAt(profileHeader, signatureHeader, currentSeconds())
-}
-
-// VerifyAndDecodeProfileAt is VerifyAndDecodeProfile with an explicit clock.
-func (v *ProfileSignatureVerifier) VerifyAndDecodeProfileAt(profileHeader, signatureHeader string, nowSeconds uint64) (*Profile, error) {
-	if err := v.VerifyProfileSignatureAt(profileHeader, signatureHeader, nowSeconds); err != nil {
+func (r signatureRules) verifyAndDecodeAt(profileHeader, signatureHeader string, nowSeconds uint64) (*Profile, error) {
+	if err := r.verifyAt(profileHeader, signatureHeader, nowSeconds); err != nil {
 		return nil, err
 	}
 
@@ -146,7 +148,7 @@ func stringMember(members map[string]json.RawMessage, name string) (string, bool
 	return value, true
 }
 
-func (v *ProfileSignatureVerifier) selectKey(headerSegment string) (ed25519.PublicKey, error) {
+func (r signatureRules) selectKey(headerSegment string) (ed25519.PublicKey, error) {
 	header, ok := decodeObject(headerSegment)
 	if !ok {
 		return nil, NewProfileSignatureError(ReasonMalformedSignature)
@@ -162,8 +164,8 @@ func (v *ProfileSignatureVerifier) selectKey(headerSegment string) (ed25519.Publ
 	}
 
 	kid, ok := stringMember(header, "kid")
-	key, trusted := v.publicKeys[kid]
-	if !ok || !IsCanonicalKeyVersion(kid) || !trusted {
+	key, trusted := r.keys.keyFor(kid)
+	if !ok || !trusted {
 		return nil, NewProfileSignatureError(ReasonUnknownKey)
 	}
 	return key, nil
@@ -229,8 +231,8 @@ func isCanonicalHash(value string) bool {
 		base64.RawURLEncoding.EncodeToString(raw) == value
 }
 
-func (v *ProfileSignatureVerifier) checkClaims(claims signedClaims, profileHeader string, nowSeconds uint64) error {
-	if absoluteDifference(nowSeconds, claims.iat) > v.toleranceSeconds {
+func (r signatureRules) checkClaims(claims signedClaims, profileHeader string, nowSeconds uint64) error {
+	if absoluteDifference(nowSeconds, claims.iat) > r.toleranceSeconds {
 		return NewProfileSignatureError(ReasonTimestampOutOfTolerance)
 	}
 
@@ -239,7 +241,7 @@ func (v *ProfileSignatureVerifier) checkClaims(claims signedClaims, profileHeade
 		return NewProfileSignatureError(ReasonProfileHashMismatch)
 	}
 
-	if expected, ok := v.ExpectedAudience(); ok && claims.aud != expected {
+	if r.expectedAudience != nil && claims.aud != *r.expectedAudience {
 		return NewProfileSignatureError(ReasonAudienceMismatch)
 	}
 	return nil
@@ -250,4 +252,17 @@ func absoluteDifference(a, b uint64) uint64 {
 		return a - b
 	}
 	return b - a
+}
+
+// readSignatureKeyVersion returns the canonical kid named by a signature's
+// protected header. Only such a kid justifies a JWKS refetch: a missing or
+// non-canonical kid never triggers network work.
+func readSignatureKeyVersion(signatureHeader string) (string, bool) {
+	protected, _, _ := strings.Cut(signatureHeader, ".")
+	header, ok := decodeObject(protected)
+	if !ok {
+		return "", false
+	}
+	kid, ok := stringMember(header, "kid")
+	return kid, ok && IsCanonicalKeyVersion(kid)
 }

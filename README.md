@@ -141,27 +141,30 @@ missing and `401` on undecodable headers in production) and expose `FromContext`
 
 If your service can be reached without going through the gateway, enable verification so
 forged `x-mycelium-profile` headers are rejected. The gateway signs the exact profile header
-with Ed25519 (`x-mycelium-profile-signature`, compact JWS); the SDK verifies it locally with
-the gateway public key, using only the Go standard library.
+with Ed25519 (`x-mycelium-profile-signature`, compact JWS) and publishes its public keys as a
+JWKS at `/.well-known/mycelium-profile-jwks.json`. The SDK downloads them, caches them and
+verifies every signature locally, using only the Go standard library.
 
-Set the public key **after** the gateway is already signing:
+Point the SDK at the gateway JWKS **after** the gateway is already signing:
 
 ```bash
-export MYC_PROFILE_PUBLIC_KEY_1="$(cat profile-signing-v1.pub.pem)"
+export MYCELIUM_JWKS_URL="https://gateway.internal/.well-known/mycelium-profile-jwks.json"
+export MYC_PROFILE_SIGNATURE_AUDIENCE=billing-api  # required: this service's name in the gateway
 ```
 
 | Variable | Meaning |
 |---|---|
-| `MYC_PROFILE_PUBLIC_KEY_<version>` | Gateway public key (PEM SPKI) trusted for `kid = <version>`. Any such variable enables verification |
-| `MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS` | Accepted clock difference, default `60` |
-| `MYC_PROFILE_SIGNATURE_AUDIENCE` | Optional. When set, the `aud` claim must equal it |
+| `MYCELIUM_JWKS_URL` | URL of the gateway JWKS (`https://`). Setting it enables verification |
+| `MYC_PROFILE_SIGNATURE_AUDIENCE` | **Required** when `MYCELIUM_JWKS_URL` is set. The `aud` claim must equal it |
+| `MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS` | Optional. Accepted clock difference, default `60` |
+| `MYCELIUM_JWKS_ALLOW_INSECURE_HTTP` | Local development only. `true` accepts an `http://` URL (logs a warning) |
 
-Load the configuration at startup so an invalid value stops the service:
+Configure at startup so an invalid value stops the service:
 
 ```go
-verifier, err := mycelium.ConfigureProfileSignature()
+verifier, err := mycelium.ConfigureProfileSignature(ctx) // validates the settings, no network access
 if err != nil {
-    log.Fatal(err) // *mycelium.ProfileSignatureConfigurationError
+    log.Fatal(err) // invalid setting
 }
 
 handler := myceliumhttp.Middleware(
@@ -172,15 +175,40 @@ handler := myceliumhttp.Middleware(
 )(mux)
 ```
 
+The gateway JWKS is downloaded on the **first signed request**, not at startup. Requests only
+reach the service through the gateway, so the service never needs the gateway to start (no
+startup ordering between them). Until the keys are downloaded, requests fail closed (`403`); a
+failed first download is retried after 5 seconds. To download at startup instead, and stop when
+the gateway is unreachable, opt in with `verifier.Prefetch(ctx)` after
+`ConfigureProfileSignature`.
+
+Without `ConfigureProfileSignature`, the adapters read the settings once and fetch the keys on
+first use as well; invalid settings then make every request fail with `500`.
+
 With verification enabled, every adapter (`nethttp`, `gin`, `echo`) verifies **before**
 decoding, in every environment (the development leniency does not apply): a rejected
 signature answers `403 Unable to verify Mycelium profile`, a configuration or internal error a
-generic `500`. Without any public key, the adapters keep the behavior above.
+generic `500`. Without `MYCELIUM_JWKS_URL`, the adapters keep the behavior above, except that a
+signed profile logs one warning per process (`MYCELIUM_JWKS_URL` is not set, so nothing is
+verified).
+
+Key handling follows the gateway contract (`testdata/profile-signature/jwks-vectors.json`):
+
+- the set is cached for the `max-age` sent by the gateway (bounded to 1 minute..1 day,
+  12 hours when absent), then refreshed;
+- a signature with an unknown `kid` triggers one refetch, at most every 30 seconds and shared
+  by concurrent requests, so gateway key rotation needs no change or restart here;
+- if a refresh fails, the last valid set is kept and the failure is logged (`log/slog`);
+- the fetch is bounded (5 seconds, 64 KiB, redirects never followed) and a set with private
+  material, another key type, a wrong key length or a non-canonical/repeated `kid` is refused
+  as a whole.
+
+The JWKS URL comes only from configuration, never from a request.
 
 To verify outside an HTTP adapter:
 
 ```go
-profile, err := verifier.VerifyAndDecodeProfile(profileHeader, signatureHeader)
+profile, err := verifier.VerifyAndDecodeProfile(ctx, profileHeader, signatureHeader)
 var rejected *mycelium.ProfileSignatureError
 if errors.As(err, &rejected) {
     // rejected.Reason: missing_signature, unknown_key, invalid_signature,
@@ -189,8 +217,8 @@ if errors.As(err, &rejected) {
 ```
 
 The verifier is tested against the cross-language contract vectors produced by the gateway
-(`testdata/profile-signature/vectors.json`, copied byte for byte), the same corpus used by
-the Python, JavaScript and Rust verifiers.
+(`testdata/profile-signature/vectors.json` and `jwks-vectors.json`, copied byte for byte), the
+same corpus used by the Python, JavaScript and Rust verifiers.
 
 ## Error handling
 
@@ -203,7 +231,7 @@ All SDK errors embed `*MyceliumError` (`Message`, `Code`, `ExpTrue`) and support
 | `*InsufficientLicensesError` | `MYC00019` | `GetRelatedAccountOrError` when licensed resources are present but empty |
 | `*InsufficientPrivilegesError` | `MYC00019` | Any method requiring a privilege the profile lacks (carries `FilteringState`) |
 | `*ProfileSignatureError` | `MYC_PROFILE_SIGNATURE_INVALID` | Signature verification; carries a log-safe `Reason` |
-| `*ProfileSignatureConfigurationError` | `MYC_PROFILE_SIGNATURE_CONFIG_INVALID` | `ConfigureProfileSignature` / `LoadProfileSignatureVerifier` on an invalid setting |
+| `*ProfileSignatureConfigurationError` | `MYC_PROFILE_SIGNATURE_CONFIG_INVALID` | `ConfigureProfileSignature` / `LoadProfileSignatureVerifier` on an invalid setting; `Prefetch` on an unsafe JWKS |
 
 ```go
 var decErr *mycelium.ProfileDecodingError

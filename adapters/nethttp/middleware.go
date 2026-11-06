@@ -40,9 +40,11 @@ func (c *config) resolvedEnvironment() string {
 }
 
 // WithProfileSignatureVerifier sets the signature verifier explicitly (for
-// example the one returned by mycelium.ConfigureProfileSignature at startup).
-// When unset, the verifier is loaded once from the MYC_PROFILE_PUBLIC_KEY_*
-// environment; with no public key configured, verification is disabled.
+// example the one returned by mycelium.ConfigureProfileSignature at startup;
+// the gateway JWKS is downloaded on the first signed request unless the
+// service called Prefetch on it). When unset, the verifier is
+// loaded once from the environment (MYCELIUM_JWKS_URL); without that
+// variable, verification is disabled.
 func WithProfileSignatureVerifier(verifier *mycelium.ProfileSignatureVerifier) Option {
 	return func(c *config) { c.verifier = verifier }
 }
@@ -53,8 +55,8 @@ func WithSignatureRejectionListener(listener func(reason string)) Option {
 	return func(c *config) { c.onRejected = listener }
 }
 
-func (c *config) enforceSignature(header http.Header) mycelium.SignatureEnforcement {
-	outcome := mycelium.EnforceProfileSignature(header, c.verifier)
+func (c *config) enforceSignature(ctx context.Context, header http.Header) mycelium.SignatureEnforcement {
+	outcome := mycelium.EnforceProfileSignature(ctx, header, c.verifier)
 	if outcome.Reason != "" && c.onRejected != nil {
 		c.onRejected(outcome.Reason)
 	}
@@ -68,8 +70,8 @@ func (c *config) enforceSignature(header http.Header) mycelium.SignatureEnforcem
 // simply absent). In any other environment a missing header yields 403 and an
 // undecodable header yields 401.
 //
-// When signature verification is enabled (any MYC_PROFILE_PUBLIC_KEY_* or an
-// explicit verifier), the profile is authenticated first in every
+// When signature verification is enabled (MYCELIUM_JWKS_URL or an explicit
+// verifier), the profile is authenticated first in every
 // environment: a rejected signature answers 403 and a configuration or
 // internal error 500, both with generic details.
 func Middleware(opts ...Option) func(http.Handler) http.Handler {
@@ -82,7 +84,7 @@ func Middleware(opts ...Option) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if outcome := cfg.enforceSignature(r.Header); outcome.Enabled {
+			if outcome := cfg.enforceSignature(r.Context(), r.Header); outcome.Enabled {
 				if outcome.Profile == nil {
 					writeJSONError(w, outcome.Status, outcome.Detail)
 					return

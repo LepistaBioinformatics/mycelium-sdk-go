@@ -2,11 +2,14 @@ package mycelium
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"os"
-	"strconv"
 	"testing"
 )
 
@@ -49,23 +52,36 @@ func readCorpus(t *testing.T) signatureCorpus {
 	return corpus
 }
 
-func vectorVerifier(t *testing.T, corpus signatureCorpus, vector signatureVector) *ProfileSignatureVerifier {
+// jwkOfPEM converts a corpus SPKI PEM to the JWK the gateway publishes.
+func jwkOfPEM(t *testing.T, version, publicPEM string) map[string]string {
 	t.Helper()
-	environ := map[string]string{
-		ProfileSignatureToleranceEnv: strconv.FormatUint(vector.ToleranceSeconds, 10),
+	block, _ := pem.Decode([]byte(publicPEM))
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse %s: %v", version, err)
 	}
-	for _, version := range vector.TrustedKeyVersions {
-		environ[ProfilePublicKeyEnvPrefix+version] = corpus.PublicKeys[version]
+	return map[string]string{
+		"kty": "OKP", "crv": "Ed25519", "kid": version,
+		"x": base64.RawURLEncoding.EncodeToString(parsed.(ed25519.PublicKey)),
 	}
-	if vector.ExpectedAudience != nil {
-		environ[ProfileSignatureAudienceEnv] = *vector.ExpectedAudience
-	}
+}
 
-	verifier, err := LoadProfileSignatureVerifierFromEnv(environ)
-	if err != nil || verifier == nil {
-		t.Fatalf("%s: build verifier: %v", vector.Name, err)
+func vectorRules(t *testing.T, corpus signatureCorpus, vector signatureVector) signatureRules {
+	t.Helper()
+	jwks := []map[string]string{}
+	for _, version := range vector.TrustedKeyVersions {
+		jwks = append(jwks, jwkOfPEM(t, version, corpus.PublicKeys[version]))
 	}
-	return verifier
+	document, _ := json.Marshal(map[string]any{"keys": jwks})
+	keys, err := ParseTrustedProfileKeys(document)
+	if err != nil {
+		t.Fatalf("%s: keys: %v", vector.Name, err)
+	}
+	return signatureRules{
+		keys:             keys,
+		toleranceSeconds: vector.ToleranceSeconds,
+		expectedAudience: vector.ExpectedAudience,
+	}
 }
 
 func outcomeOf(err error) string {
@@ -87,7 +103,7 @@ func TestContractEveryVectorHasTheExpectedOutcome(t *testing.T) {
 
 	for _, vector := range corpus.Vectors {
 		t.Run(vector.Name, func(t *testing.T) {
-			_, err := vectorVerifier(t, corpus, vector).VerifyAndDecodeProfileAt(
+			_, err := vectorRules(t, corpus, vector).verifyAndDecodeAt(
 				vector.ProfileHeader, vector.Signature, vector.NowSeconds)
 
 			if got := outcomeOf(err); got != vector.Expected {
@@ -101,7 +117,7 @@ func TestContractValidVectorDecodesTheSignedAccount(t *testing.T) {
 	corpus := readCorpus(t)
 	vector := corpus.Vectors[0]
 
-	profile, err := vectorVerifier(t, corpus, vector).VerifyAndDecodeProfileAt(
+	profile, err := vectorRules(t, corpus, vector).verifyAndDecodeAt(
 		vector.ProfileHeader, vector.Signature, vector.NowSeconds)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
