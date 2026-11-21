@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -112,6 +113,121 @@ func TestJWKSFailedRefreshKeepsTheLastValidSet(t *testing.T) {
 	}
 }
 
+// The kept set stops being trusted one day after it expired: verification
+// then fails closed until a refresh succeeds.
+func TestJWKSKeptSetStopsBeingTrustedAfterTheMaximumStaleness(t *testing.T) {
+	gateway := newFakeGateway(t, 10*time.Minute, 1)
+	verifier := gateway.verifier(t, 0)
+	clock := newFakeClock(verifier)
+	if err := verifier.Prefetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	gateway.goDown()
+
+	clock.advance(10*time.Minute + ProfileJWKSMaxStale - time.Second)
+	if err := verifyWith(t, verifier, 1); err != nil {
+		t.Fatalf("verify just before the maximum staleness: %v", err)
+	}
+
+	clock.advance(time.Second)
+	if err := verifyWith(t, verifier, 1); !isRejection(err, ReasonUnknownKey) {
+		t.Fatalf("err = %v, want unknown_key", err)
+	}
+	if verifier.TrustsKey("1") {
+		t.Error("the outlived set must not be trusted")
+	}
+
+	gateway.publish(1)
+	if err := verifyWith(t, verifier, 1); err != nil {
+		t.Fatalf("verify after a successful refresh: %v", err)
+	}
+}
+
+// A fetch that hangs until its timeout must not let the next request fetch
+// again: the retry interval counts from the end of the attempt.
+func TestJWKSRetryIntervalCountsFromTheEndOfTheFetch(t *testing.T) {
+	var clock *fakeClock
+	var fetches int
+	hanging := func(context.Context, string) (FetchedProfileJWKS, error) {
+		fetches++
+		clock.advance(ProfileJWKSFetchTimeout)
+		return FetchedProfileJWKS{}, errors.New("timeout")
+	}
+	verifier, err := LoadProfileSignatureVerifierFromEnv(map[string]string{
+		ProfileJWKSURLEnv:           "https://gateway.test",
+		ProfileSignatureAudienceEnv: testAudience,
+	}, WithJWKSFetcher(hanging))
+	if err != nil || verifier == nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	clock = newFakeClock(verifier)
+
+	for range 3 {
+		if err := verifyWith(t, verifier, 1); !isRejection(err, ReasonUnknownKey) {
+			t.Fatalf("err = %v, want unknown_key", err)
+		}
+	}
+	if fetches != 1 {
+		t.Errorf("fetches = %d, want 1 (cooldown since the fetch ended)", fetches)
+	}
+
+	clock.advance(ProfileJWKSEmptyRetry)
+	_ = verifyWith(t, verifier, 1)
+	if fetches != 2 {
+		t.Errorf("fetches = %d, want 2 after the retry interval", fetches)
+	}
+}
+
+// While keys are cached, a request never waits for the refresh another
+// request started: it verifies with the cached set.
+func TestJWKSRequestDoesNotWaitForARefreshInFlightWhileKeysAreCached(t *testing.T) {
+	gateway := newFakeGateway(t, 0, 1)
+	publish := gateway.fetcher()
+	entered, release := make(chan struct{}, 8), make(chan struct{})
+	var blocking atomic.Bool
+	fetcher := func(ctx context.Context, url string) (FetchedProfileJWKS, error) {
+		if blocking.Load() {
+			entered <- struct{}{}
+			<-release
+		}
+		return publish(ctx, url)
+	}
+	verifier, err := LoadProfileSignatureVerifierFromEnv(map[string]string{
+		ProfileJWKSURLEnv:           "https://gateway.test",
+		ProfileSignatureAudienceEnv: testAudience,
+	}, WithJWKSFetcher(fetcher), WithJWKSRefetchCooldown(0))
+	if err != nil || verifier == nil {
+		t.Fatalf("verifier: %v", err)
+	}
+	if err := verifier.Prefetch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking.Store(true)
+	refreshing := make(chan error, 1)
+	go func() { refreshing <- verifyWith(t, verifier, 1) }()
+	<-entered
+
+	served := make(chan error, 1)
+	go func() { served <- verifyWith(t, verifier, 1) }()
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Errorf("verify with the cached set: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the request waited for the refresh in flight")
+	}
+
+	close(release)
+	if err := <-refreshing; err != nil {
+		t.Errorf("refreshing request: %v", err)
+	}
+	if got := gateway.fetches.Load(); got != 2 {
+		t.Errorf("fetches = %d, want 2", got)
+	}
+}
+
 func TestJWKSPrefetchFailsWhenTheGatewayIsUnreachable(t *testing.T) {
 	gateway := newFakeGateway(t, 10*time.Minute, 1)
 	gateway.goDown()
@@ -190,7 +306,7 @@ func serveJWKS(t *testing.T) *httptest.Server {
 	t.Helper()
 	document := testJWKS(t, 1, 2)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/jwks.json", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(ProfileJWKSPath, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Cache-Control", "public, max-age=600")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(document)
@@ -199,7 +315,7 @@ func serveJWKS(t *testing.T) *httptest.Server {
 		_, _ = w.Write([]byte(strings.Repeat(" ", 70*1024)))
 	})
 	mux.HandleFunc("/redirect.json", func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/jwks.json", http.StatusFound)
+		http.Redirect(w, r, ProfileJWKSPath, http.StatusFound)
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -209,7 +325,7 @@ func serveJWKS(t *testing.T) *httptest.Server {
 func TestFetchProfileJWKSReadsTheSetAndItsCacheLifetime(t *testing.T) {
 	server := serveJWKS(t)
 
-	fetched, err := FetchProfileJWKS(context.Background(), server.URL+"/jwks.json")
+	fetched, err := FetchProfileJWKS(context.Background(), server.URL+ProfileJWKSPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +348,7 @@ func TestConfiguredVerifierDownloadsOverHTTPOnFirstUseOrPrefetch(t *testing.T) {
 	ResetProfileSignatureConfiguration()
 	t.Cleanup(ResetProfileSignatureConfiguration)
 	server := serveJWKS(t)
-	t.Setenv(ProfileJWKSURLEnv, server.URL+"/jwks.json")
+	t.Setenv(ProfileJWKSURLEnv, server.URL)
 	t.Setenv(ProfileJWKSAllowInsecureHTTPEnv, "true")
 	t.Setenv(ProfileSignatureAudienceEnv, testAudience)
 

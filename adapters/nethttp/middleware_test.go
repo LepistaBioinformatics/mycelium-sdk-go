@@ -2,11 +2,14 @@ package nethttp
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -118,13 +121,37 @@ type signatureCorpus struct {
 	PublicKeys map[string]string `json:"publicKeys"`
 	Vectors    []struct {
 		ProfileHeader string `json:"profileHeader"`
-		Signature     string `json:"signature"`
 	} `json:"vectors"`
 }
 
-// signedFixture returns the first (valid) contract vector and a verifier
-// whose JWKS is the document the gateway publishes (keys 1 and 2), with a
-// tolerance wide enough for the vector's fixed clock.
+// TEST ONLY: RFC 8032 section 7.1 test vector 1 (PKCS#8), key 1 of the
+// shared fixture.
+const testPrivatePEM = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJ1hsZ3v/VpguoRK9JLsLMREScVpezJpGXA7rAMcrn9g\n-----END PRIVATE KEY-----\n"
+
+// signNow signs profileHeader with key 1 at the current time, like the
+// gateway does (the tolerance is at most 5 minutes, so the fixed-clock
+// signature of the vector cannot be verified at the real time).
+func signNow(t *testing.T, profileHeader string) string {
+	t.Helper()
+	block, _ := pem.Decode([]byte(testPrivatePEM))
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encode := func(value any) string {
+		raw, _ := json.Marshal(value)
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	signed := encode(map[string]string{"typ": "JWT", "alg": "EdDSA", "kid": "1"}) + "." + encode(map[string]any{
+		"iat": time.Now().Unix(), "ph": mycelium.ProfileHeaderHash(profileHeader), "aud": "billing-api",
+	})
+	signature := ed25519.Sign(key.(ed25519.PrivateKey), []byte(signed))
+	return signed + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+// signedFixture returns the profile of the first (valid) contract vector,
+// signed now, and a verifier whose JWKS is the document the gateway
+// publishes (keys 1 and 2).
 func signedFixture(t *testing.T) (string, string, *mycelium.ProfileSignatureVerifier) {
 	t.Helper()
 	raw, err := os.ReadFile("../../testdata/profile-signature/vectors.json")
@@ -136,14 +163,14 @@ func signedFixture(t *testing.T) (string, string, *mycelium.ProfileSignatureVeri
 		t.Fatal(err)
 	}
 	verifier, err := mycelium.LoadProfileSignatureVerifierFromEnv(map[string]string{
-		mycelium.ProfileJWKSURLEnv:            "https://gateway.test/jwks.json",
-		mycelium.ProfileSignatureAudienceEnv:  "billing-api",
-		mycelium.ProfileSignatureToleranceEnv: strconv.FormatUint(mycelium.MaxSafeTimestampSeconds, 10),
+		mycelium.ProfileJWKSURLEnv:           "https://gateway.test",
+		mycelium.ProfileSignatureAudienceEnv: "billing-api",
 	}, mycelium.WithJWKSFetcher(publishedJWKS(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return corpus.Vectors[0].ProfileHeader, corpus.Vectors[0].Signature, verifier
+	profileHeader := corpus.Vectors[0].ProfileHeader
+	return profileHeader, signNow(t, profileHeader), verifier
 }
 
 // publishedJWKS serves the gateway-published JWKS of the shared fixture.
@@ -231,7 +258,7 @@ func TestInvalidSignatureConfigurationFailsClosed(t *testing.T) {
 	mycelium.ResetProfileSignatureConfiguration()
 	t.Cleanup(mycelium.ResetProfileSignatureConfiguration)
 	// Verification requested without the mandatory audience.
-	t.Setenv(mycelium.ProfileJWKSURLEnv, "https://gateway.test/jwks.json")
+	t.Setenv(mycelium.ProfileJWKSURLEnv, "https://gateway.test")
 
 	rec, _ := serveSigned([]Option{WithEnvironment("development")}, http.Header{})
 

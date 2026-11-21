@@ -148,15 +148,15 @@ verifies every signature locally, using only the Go standard library.
 Point the SDK at the gateway JWKS **after** the gateway is already signing:
 
 ```bash
-export MYCELIUM_JWKS_URL="https://gateway.internal/.well-known/mycelium-profile-jwks.json"
+export MYCELIUM_JWKS_URL="mycelium.example.com"     # the gateway address is enough
 export MYC_PROFILE_SIGNATURE_AUDIENCE=billing-api  # required: this service's name in the gateway
 ```
 
 | Variable | Meaning |
 |---|---|
-| `MYCELIUM_JWKS_URL` | URL of the gateway JWKS (`https://`). Setting it enables verification |
+| `MYCELIUM_JWKS_URL` | Where the gateway JWKS is. Either the complete endpoint (`https://mycelium.example.com/.well-known/mycelium-profile-jwks.json`) or just the gateway address (`mycelium.example.com`, `https://mycelium.example.com/prod`), to which `/.well-known/mycelium-profile-jwks.json` is appended. `https://` is assumed when no scheme is given. Setting it enables verification |
 | `MYC_PROFILE_SIGNATURE_AUDIENCE` | **Required** when `MYCELIUM_JWKS_URL` is set. The `aud` claim must equal it |
-| `MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS` | Optional. Accepted clock difference, default `60` |
+| `MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS` | Optional. Accepted clock difference, an integer from `1` to `300`, default `60` |
 | `MYCELIUM_JWKS_ALLOW_INSECURE_HTTP` | Local development only. `true` accepts an `http://` URL (logs a warning) |
 
 Configure at startup so an invalid value stops the service:
@@ -198,7 +198,10 @@ Key handling follows the gateway contract (`testdata/profile-signature/jwks-vect
   12 hours when absent), then refreshed;
 - a signature with an unknown `kid` triggers one refetch, at most every 30 seconds and shared
   by concurrent requests, so gateway key rotation needs no change or restart here;
-- if a refresh fails, the last valid set is kept and the failure is logged (`log/slog`);
+- if a refresh fails, the last valid set is kept and the failure is logged (`log/slog`); the
+  set stops being trusted 1 day after it expired, and requests then fail closed until a refresh
+  succeeds;
+- while keys are cached, a request never waits for a refresh started by another request;
 - the fetch is bounded (5 seconds, 64 KiB, redirects never followed) and a set with private
   material, another key type, a wrong key length or a non-canonical/repeated `kid` is refused
   as a whole.

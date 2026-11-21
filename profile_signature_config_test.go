@@ -37,6 +37,35 @@ func TestConfigEnabledByTheJWKSURLOnly(t *testing.T) {
 	}
 }
 
+func TestConfigToleranceAcceptsUpToFiveMinutes(t *testing.T) {
+	for raw, want := range map[string]uint64{"1": 1, " 120 ": 120, "300": MaxProfileSignatureToleranceSeconds} {
+		verifier, err := loadSettings(map[string]string{
+			ProfileJWKSURLEnv:            testHTTPSURL,
+			ProfileSignatureAudienceEnv:  testAudience,
+			ProfileSignatureToleranceEnv: raw,
+		})
+		if err != nil || verifier == nil {
+			t.Fatalf("%q: load: %v", raw, err)
+		}
+		if got := verifier.ToleranceSeconds(); got != want {
+			t.Errorf("%q: tolerance = %d, want %d", raw, got, want)
+		}
+	}
+}
+
+func TestConfigAudienceIsTrimmed(t *testing.T) {
+	verifier, err := loadSettings(map[string]string{
+		ProfileJWKSURLEnv:           testHTTPSURL,
+		ProfileSignatureAudienceEnv: " billing-api\n",
+	})
+	if err != nil || verifier == nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got := verifier.ExpectedAudience(); got != "billing-api" {
+		t.Errorf("audience = %q, want trimmed", got)
+	}
+}
+
 func TestConfigAudienceIsMandatoryWhenEnabled(t *testing.T) {
 	_, err := loadSettings(map[string]string{ProfileJWKSURLEnv: testHTTPSURL})
 	if !isConfigurationError(err) {
@@ -66,6 +95,8 @@ func TestConfigRejectsOtherSchemesRelativeURLsAndCredentials(t *testing.T) {
 		"file:///etc/jwks.json",
 		"https://user:pass@gateway/jwks.json",
 		"https:gateway/jwks.json",
+		"https://gateway.test/prod?tenant=1",
+		"https://gateway.test/prod#keys",
 	} {
 		_, err := loadSettings(map[string]string{
 			ProfileJWKSURLEnv: raw, ProfileSignatureAudienceEnv: testAudience,
@@ -77,10 +108,31 @@ func TestConfigRejectsOtherSchemesRelativeURLsAndCredentials(t *testing.T) {
 	}
 }
 
+func TestConfigGatewayBaseGetsTheJWKSPath(t *testing.T) {
+	for configured, resolved := range map[string]string{
+		"gateway.test":          testHTTPSURL,
+		"https://gateway.test":  testHTTPSURL,
+		"https://gateway.test/": testHTTPSURL,
+		"gateway.test/prod":     "https://gateway.test/prod" + ProfileJWKSPath,
+	} {
+		verifier, err := LoadProfileSignatureVerifierFromEnv(map[string]string{
+			ProfileJWKSURLEnv: configured, ProfileSignatureAudienceEnv: testAudience,
+		})
+		if err != nil || verifier == nil {
+			t.Fatalf("%q: %v", configured, err)
+		}
+		if verifier.JWKSURL() != resolved {
+			t.Errorf("%q: resolved %q, want %q", configured, verifier.JWKSURL(), resolved)
+		}
+	}
+}
+
 func TestConfigInvalidSettingsFailEvenWhenDisabled(t *testing.T) {
 	for _, environ := range []map[string]string{
 		{ProfileSignatureToleranceEnv: "0"},
 		{ProfileSignatureToleranceEnv: "060"},
+		{ProfileSignatureToleranceEnv: "301"},
+		{ProfileSignatureToleranceEnv: "86400"},
 		{ProfileSignatureToleranceEnv: "9007199254740992"},
 		{ProfileSignatureAudienceEnv: "   "},
 		{ProfileJWKSAllowInsecureHTTPEnv: "maybe"},
@@ -120,7 +172,7 @@ func TestConfigProcessVerifierIsCachedUntilReset(t *testing.T) {
 func TestConfigStartupDoesNotNeedTheGateway(t *testing.T) {
 	ResetProfileSignatureConfiguration()
 	t.Cleanup(ResetProfileSignatureConfiguration)
-	t.Setenv(ProfileJWKSURLEnv, "http://127.0.0.1:1/jwks.json")
+	t.Setenv(ProfileJWKSURLEnv, "http://127.0.0.1:1")
 	t.Setenv(ProfileJWKSAllowInsecureHTTPEnv, "true")
 	t.Setenv(ProfileSignatureAudienceEnv, testAudience)
 

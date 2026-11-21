@@ -78,6 +78,30 @@ func signedPair(t testing.TB, version uint32) (string, string) {
 	return profileHeader, protected + "." + claims + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
+// fakeClock is the key store clock tests move by hand.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock(verifier *ProfileSignatureVerifier) *fakeClock {
+	clock := &fakeClock{now: time.Now()}
+	verifier.store.now = clock.read
+	return clock
+}
+
+func (c *fakeClock) read() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) advance(by time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(by)
+}
+
 // fakeGateway publishes a key set that tests can change, and counts fetches.
 // A nil set makes every fetch fail (gateway down).
 type fakeGateway struct {
@@ -123,7 +147,7 @@ func (g *fakeGateway) fetcher() ProfileJWKSFetcher {
 func (g *fakeGateway) verifier(t testing.TB, cooldown time.Duration) *ProfileSignatureVerifier {
 	t.Helper()
 	verifier, err := LoadProfileSignatureVerifierFromEnv(map[string]string{
-		ProfileJWKSURLEnv:           "https://gateway.test/jwks.json",
+		ProfileJWKSURLEnv:           "https://gateway.test",
 		ProfileSignatureAudienceEnv: testAudience,
 	}, WithJWKSFetcher(g.fetcher()), WithJWKSRefetchCooldown(cooldown))
 	if err != nil || verifier == nil {

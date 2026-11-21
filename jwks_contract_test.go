@@ -44,6 +44,11 @@ type jwksCorpus struct {
 		CacheControl    *string `json:"cacheControl"`
 		ExpectedSeconds int64   `json:"expectedSeconds"`
 	} `json:"cacheControl"`
+	URLs []struct {
+		Configured        string  `json:"configured"`
+		AllowInsecureHTTP bool    `json:"allowInsecureHttp"`
+		Resolved          *string `json:"resolved"`
+	} `json:"urls"`
 }
 
 func readJWKSCorpus(t *testing.T) jwksCorpus {
@@ -139,6 +144,26 @@ func TestJWKSContractCacheLifetimes(t *testing.T) {
 		want := time.Duration(vector.ExpectedSeconds) * time.Second
 		if got := ReadJWKSCacheMaxAge(value); got != want {
 			t.Errorf("%q: max-age = %v, want %v", value, got, want)
+		}
+	}
+}
+
+func TestJWKSContractConfiguredURLsResolveLikeTheGateway(t *testing.T) {
+	urls := readJWKSCorpus(t).URLs
+	if len(urls) == 0 {
+		t.Fatal("no jwks url vectors")
+	}
+
+	for _, vector := range urls {
+		got, err := parseProfileJWKSURL(vector.Configured, vector.AllowInsecureHTTP)
+		if vector.Resolved == nil {
+			if !isConfigurationError(err) {
+				t.Errorf("%q: got (%q, %v), want configuration error", vector.Configured, got, err)
+			}
+			continue
+		}
+		if err != nil || got != *vector.Resolved {
+			t.Errorf("%q: got (%q, %v), want %q", vector.Configured, got, err, *vector.Resolved)
 		}
 	}
 }

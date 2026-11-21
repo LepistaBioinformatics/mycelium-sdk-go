@@ -149,12 +149,12 @@ func parseTolerance(environ map[string]string) (uint64, error) {
 
 	trimmed := strings.TrimSpace(raw)
 	invalid := NewProfileSignatureConfigurationError(
-		ProfileSignatureToleranceEnv + " must be a positive integer")
+		ProfileSignatureToleranceEnv + " must be an integer between 1 and 300")
 	if len(trimmed) > 16 || !canonicalPositiveInteger.MatchString(trimmed) {
 		return 0, invalid
 	}
 	value, err := strconv.ParseUint(trimmed, 10, 64)
-	if err != nil || value > MaxSafeTimestampSeconds {
+	if err != nil || value > MaxProfileSignatureToleranceSeconds {
 		return 0, invalid
 	}
 	return value, nil
@@ -165,11 +165,12 @@ func parseAudience(environ map[string]string) (*string, error) {
 	if !ok {
 		return nil, nil
 	}
-	if strings.TrimSpace(raw) == "" {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return nil, NewProfileSignatureConfigurationError(
 			ProfileSignatureAudienceEnv + " must not be empty")
 	}
-	return &raw, nil
+	return &trimmed, nil
 }
 
 func parseInsecureSwitch(environ map[string]string) (bool, error) {

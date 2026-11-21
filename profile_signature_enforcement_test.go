@@ -65,7 +65,7 @@ func TestEnforcementRefusesWithGenericDetails(t *testing.T) {
 func TestEnforcementRefusesAnotherAudience(t *testing.T) {
 	gateway := newFakeGateway(t, 10*time.Minute, 1)
 	verifier, err := LoadProfileSignatureVerifierFromEnv(map[string]string{
-		ProfileJWKSURLEnv:           "https://gateway.test/jwks.json",
+		ProfileJWKSURLEnv:           "https://gateway.test",
 		ProfileSignatureAudienceEnv: "another-service",
 	}, WithJWKSFetcher(gateway.fetcher()))
 	if err != nil {

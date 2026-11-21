@@ -15,7 +15,11 @@ import (
 //     requests fail closed and a failed attempt is retried after
 //     ProfileJWKSEmptyRetry (at most the cooldown).
 //   - Refreshed when max-age expires; a failed refresh keeps the last valid
-//     set and is logged, so a gateway outage never drops trusted keys.
+//     set and is logged, so a short gateway outage never drops trusted keys.
+//     The set stops being trusted ProfileJWKSMaxStale after it expired, so a
+//     retired key cannot verify forever while refreshes fail.
+//   - A request never waits for a refresh another request already started
+//     while keys are cached: it verifies with the cached set.
 //   - Refetched when a signature names an unknown kid, at most once per
 //     cooldown (measured from the last attempt, prefetch included), and
 //     single-flight: concurrent requests share one fetch, and waiters that
@@ -26,6 +30,7 @@ type profileKeyStore struct {
 	url      string
 	fetch    ProfileJWKSFetcher
 	cooldown time.Duration
+	now      func() time.Time
 
 	mu          sync.RWMutex
 	keys        *TrustedProfileKeys
@@ -43,14 +48,19 @@ func newProfileKeyStore(url string, fetch ProfileJWKSFetcher, cooldown time.Dura
 		url:      url,
 		fetch:    fetch,
 		cooldown: cooldown,
+		now:      time.Now,
 		keys:     emptyTrustedProfileKeys(),
 	}
 }
 
 // current returns the trusted keys now and the generation they belong to.
+// The keys are an empty set once they outlived the maximum staleness.
 func (s *profileKeyStore) current() (*TrustedProfileKeys, uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.fetched && !s.now().Before(s.freshUntil.Add(ProfileJWKSMaxStale)) {
+		return emptyTrustedProfileKeys(), s.generation
+	}
 	return s.keys, s.generation
 }
 
@@ -62,15 +72,25 @@ func (s *profileKeyStore) prefetch(ctx context.Context) error {
 }
 
 // refreshIfStale refreshes when the cached set expired or was never fetched.
+// While a set is cached it never waits for a refresh already in flight.
 func (s *profileKeyStore) refreshIfStale(ctx context.Context) {
 	s.mu.RLock()
 	generation := s.generation
-	stale := !s.fetched || !time.Now().Before(s.freshUntil)
+	stale := !s.fetched || !s.now().Before(s.freshUntil)
 	s.mu.RUnlock()
 
-	if stale {
-		s.refreshFrom(ctx, generation)
+	if !stale {
+		return
 	}
+	if generation == 0 {
+		s.refreshFrom(ctx, generation)
+		return
+	}
+	if !s.refreshMu.TryLock() {
+		return
+	}
+	defer s.refreshMu.Unlock()
+	s.refreshHolding(ctx, generation)
 }
 
 // refreshAfterUnknownKey refetches after an unknown kid; it reports whether
@@ -82,7 +102,11 @@ func (s *profileKeyStore) refreshAfterUnknownKey(ctx context.Context, seenGenera
 func (s *profileKeyStore) refreshFrom(ctx context.Context, seenGeneration uint64) bool {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	return s.refreshHolding(ctx, seenGeneration)
+}
 
+// refreshHolding runs the single-flight refresh; refreshMu must be held.
+func (s *profileKeyStore) refreshHolding(ctx context.Context, seenGeneration uint64) bool {
 	s.mu.RLock()
 	generation, attempted, lastAttempt := s.generation, s.attempted, s.lastAttempt
 	s.mu.RUnlock()
@@ -90,7 +114,7 @@ func (s *profileKeyStore) refreshFrom(ctx context.Context, seenGeneration uint64
 	if generation != seenGeneration {
 		return true
 	}
-	if attempted && time.Since(lastAttempt) < s.retryInterval(generation) {
+	if attempted && s.now().Sub(lastAttempt) < s.retryInterval(generation) {
 		return false
 	}
 
@@ -113,12 +137,15 @@ func (s *profileKeyStore) retryInterval(generation uint64) time.Duration {
 
 // fetchAndStore runs one fetch, detached from the caller's cancellation so
 // an abandoned request does not burn the cooldown with a cancelled fetch.
+// The cooldown counts from the end of the fetch, so a fetch that hangs until
+// its timeout does not let every queued request run its own.
 func (s *profileKeyStore) fetchAndStore(ctx context.Context) error {
+	fetched, err := s.fetch(context.WithoutCancel(ctx), s.url)
+
 	s.mu.Lock()
-	s.attempted, s.lastAttempt = true, time.Now()
+	s.attempted, s.lastAttempt = true, s.now()
 	s.mu.Unlock()
 
-	fetched, err := s.fetch(context.WithoutCancel(ctx), s.url)
 	if err != nil {
 		return err
 	}
@@ -130,7 +157,7 @@ func (s *profileKeyStore) fetchAndStore(ctx context.Context) error {
 	defer s.mu.Unlock()
 	s.keys = fetched.Keys
 	s.generation++
-	s.freshUntil = time.Now().Add(fetched.MaxAge)
+	s.freshUntil = s.now().Add(fetched.MaxAge)
 	s.fetched = true
 	return nil
 }
