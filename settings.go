@@ -1,5 +1,7 @@
 package mycelium
 
+import "time"
+
 // Header keys injected by the Mycelium API Gateway into downstream requests.
 //
 // These mirror the gateway constants in lib/http_tools/src/settings.rs and the
@@ -20,4 +22,69 @@ const (
 	DefaultConnectionStringKey = "x-mycelium-connection-string"
 	// DefaultTenantIDKey carries the resolved tenant id.
 	DefaultTenantIDKey = "x-mycelium-tenant-id"
+	// DefaultProfileSignatureKey carries the gateway's compact JWS (EdDSA)
+	// over the exact DefaultProfileKey value.
+	DefaultProfileSignatureKey = "x-mycelium-profile-signature"
+)
+
+// Profile signature verification settings, shared with the gateway and the
+// Python, JavaScript and Rust verifiers.
+const (
+	// ProfileJWKSURLEnv names the URL of the gateway profile JWKS: either
+	// the complete endpoint or just the gateway address, to which
+	// ProfileJWKSPath is appended (https:// assumed without a scheme). Its
+	// presence enables verification; it must be https:// unless
+	// ProfileJWKSAllowInsecureHTTPEnv is "true" (development only).
+	ProfileJWKSURLEnv = "MYCELIUM_JWKS_URL"
+	// ProfileJWKSAllowInsecureHTTPEnv accepts an http:// JWKS URL when
+	// "true" (development only). Absent or "false" refuses it.
+	ProfileJWKSAllowInsecureHTTPEnv = "MYCELIUM_JWKS_ALLOW_INSECURE_HTTP"
+	// ProfileSignatureToleranceEnv optionally overrides the iat tolerance.
+	ProfileSignatureToleranceEnv = "MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS"
+	// ProfileSignatureAudienceEnv sets the expected aud claim. Required
+	// whenever ProfileJWKSURLEnv is set.
+	ProfileSignatureAudienceEnv = "MYC_PROFILE_SIGNATURE_AUDIENCE"
+	// DefaultProfileSignatureToleranceSeconds is the symmetric, inclusive
+	// iat tolerance.
+	DefaultProfileSignatureToleranceSeconds uint64 = 60
+	// MaxProfileSignatureToleranceSeconds is the largest accepted iat
+	// tolerance (5 minutes). The tolerance is the replay window of a
+	// captured signed profile, so a mistyped value must not widen it to
+	// hours or days.
+	MaxProfileSignatureToleranceSeconds uint64 = 300
+	// MaxProfileSignatureBytes bounds the accepted signature header.
+	MaxProfileSignatureBytes = 4096
+	// MaxSafeTimestampSeconds is the largest integer every SDK represents
+	// exactly (2^53 - 1).
+	MaxSafeTimestampSeconds uint64 = 9_007_199_254_740_991
+)
+
+// Profile JWKS retrieval limits, shared with every verifier (see
+// testdata/profile-signature/jwks-vectors.json "contract").
+const (
+	// ProfileJWKSPath is where the gateway publishes the profile JWKS.
+	ProfileJWKSPath = "/.well-known/mycelium-profile-jwks.json"
+	// ProfileJWKSFetchTimeout bounds one JWKS request.
+	ProfileJWKSFetchTimeout = 5 * time.Second
+	// ProfileJWKSMaxBytes bounds the JWKS response body.
+	ProfileJWKSMaxBytes = 64 * 1024
+	// ProfileJWKSRefetchCooldown is the minimum interval between JWKS
+	// requests not caused by expiry (unknown kid, failed refresh).
+	ProfileJWKSRefetchCooldown = 30 * time.Second
+	// ProfileJWKSEmptyRetry is the shorter retry interval while no key set
+	// was ever downloaded, so a service started before the gateway picks
+	// the keys up within seconds once the gateway is reachable.
+	ProfileJWKSEmptyRetry = 5 * time.Second
+	// ProfileJWKSMaxStale is how long an expired key set stays trusted
+	// while refreshes fail (1 day). It bounds how long a key the gateway
+	// retired keeps verifying when the JWKS is unreachable; after it,
+	// requests fail closed.
+	ProfileJWKSMaxStale = 86_400 * time.Second
+	// DefaultProfileJWKSMaxAge is the cache lifetime when the response has
+	// no usable max-age (12 hours).
+	DefaultProfileJWKSMaxAge = 43_200 * time.Second
+	// MinProfileJWKSMaxAge and MaxProfileJWKSMaxAge clamp the announced
+	// max-age.
+	MinProfileJWKSMaxAge = 60 * time.Second
+	MaxProfileJWKSMaxAge = 86_400 * time.Second
 )
