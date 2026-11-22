@@ -52,6 +52,28 @@ related, err := profile.
 
 Every filter method returns a copy — the original `Profile` is never mutated.
 
+### Federated grants
+
+Grants asserted by peer instances arrive in `Profile.FederatedResources` (each a
+`FederatedResource`: the licensed resource fields plus its `Issuer`, the peer's
+instance id). Every filter above works on the local licensed resources only; opt in
+explicitly:
+
+- `WithFederated()` adds every federated grant to the local ones.
+- `FromIssuer(issuer)` keeps only the grants that issuer asserted, dropping the local ones.
+
+Both must open the chain: called after any other filter they fail closed and leave no
+licensed resources, so a narrowed chain is never widened again.
+
+```go
+related, err := profile.
+    WithFederated().
+    WithRoles([]string{"admin"}).
+    GetRelatedAccountOrError()
+
+scoped := profile.FromIssuer(peerInstanceID).WithRoles([]string{"admin"})
+```
+
 `DecodeAndDecompressProfileFromBase64` returns a `*ProfileDecodingError` on any failure
 (empty input, invalid Base64, failed decompression, or invalid JSON). By default it is
 strict; pass `WithStrict(false)` to fall back to treating the payload as uncompressed

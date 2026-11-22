@@ -97,8 +97,8 @@ func outcomeOf(err error) string {
 
 func TestContractEveryVectorHasTheExpectedOutcome(t *testing.T) {
 	corpus := readCorpus(t)
-	if len(corpus.Vectors) != 46 {
-		t.Fatalf("vectors = %d, want 46", len(corpus.Vectors))
+	if len(corpus.Vectors) != 47 {
+		t.Fatalf("vectors = %d, want 47", len(corpus.Vectors))
 	}
 
 	for _, vector := range corpus.Vectors {

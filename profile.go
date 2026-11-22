@@ -16,21 +16,22 @@ const roleTenantManager = "tenant-manager"
 // fluent filter methods return copies (the receiver is never mutated), matching
 // the immutable-chain semantics of the Rust gateway and sibling SDKs.
 type Profile struct {
-	Owners             []Owner            `json:"owners"`
-	AccID              uuid.UUID          `json:"accId"`
-	IsSubscription     bool               `json:"isSubscription"`
-	IsStaff            bool               `json:"isStaff"`
-	IsManager          bool               `json:"isManager"`
-	OwnerIsActive      bool               `json:"ownerIsActive"`
-	AccountIsActive    bool               `json:"accountIsActive"`
-	AccountWasApproved bool               `json:"accountWasApproved"`
-	AccountWasArchived bool               `json:"accountWasArchived"`
-	AccountWasDeleted  bool               `json:"accountWasDeleted"`
-	VerboseStatus      *VerboseStatus     `json:"verboseStatus,omitempty"`
-	LicensedResources  *LicensedResources `json:"licensedResources,omitempty"`
-	TenantsOwnership   *TenantsOwnership  `json:"tenantsOwnership,omitempty"`
-	Meta               map[string]string  `json:"meta,omitempty"`
-	FilteringState     []string           `json:"filteringState,omitempty"`
+	Owners             []Owner             `json:"owners"`
+	AccID              uuid.UUID           `json:"accId"`
+	IsSubscription     bool                `json:"isSubscription"`
+	IsStaff            bool                `json:"isStaff"`
+	IsManager          bool                `json:"isManager"`
+	OwnerIsActive      bool                `json:"ownerIsActive"`
+	AccountIsActive    bool                `json:"accountIsActive"`
+	AccountWasApproved bool                `json:"accountWasApproved"`
+	AccountWasArchived bool                `json:"accountWasArchived"`
+	AccountWasDeleted  bool                `json:"accountWasDeleted"`
+	VerboseStatus      *VerboseStatus      `json:"verboseStatus,omitempty"`
+	LicensedResources  *LicensedResources  `json:"licensedResources,omitempty"`
+	FederatedResources []FederatedResource `json:"federatedResources,omitempty"`
+	TenantsOwnership   *TenantsOwnership   `json:"tenantsOwnership,omitempty"`
+	Meta               map[string]string   `json:"meta,omitempty"`
+	FilteringState     []string            `json:"filteringState,omitempty"`
 }
 
 // updateState appends a "<index>:<key>:<value>" entry (1-based) to a copy of the
