@@ -153,3 +153,28 @@ func TestContractFederatedVectorDecodes(t *testing.T) {
 		t.Errorf("FromIssuer must drop the local grant: %+v", got.LicensedResources)
 	}
 }
+
+func TestFederatedOptInsOnlyOpenAChain(t *testing.T) {
+	p := federatedProfile()
+
+	got := p.OnTenant(tenantA).WithFederated()
+	if got.LicensedResources != nil {
+		t.Errorf("WithFederated after a filter must fail closed: %+v", got.LicensedResources)
+	}
+	if len(got.FilteringState) != 2 || got.FilteringState[1] != "2:withFederated:true" {
+		t.Errorf("filteringState = %v", got.FilteringState)
+	}
+
+	got = p.WithRoles([]string{"reader"}).FromIssuer(issuerA)
+	if got.LicensedResources != nil {
+		t.Errorf("FromIssuer after a filter must fail closed: %+v", got.LicensedResources)
+	}
+	if len(got.FilteringState) != 2 || got.FilteringState[1] != "2:issuer:"+issuerA.String() {
+		t.Errorf("filteringState = %v", got.FilteringState)
+	}
+
+	got = p.WithFederated().OnTenant(tenantB)
+	if countLicensed(got) != 2 || got.LicensedResources.Records[0].TenantID != tenantB {
+		t.Errorf("WithFederated first must keep the federated grants: %+v", got.LicensedResources)
+	}
+}

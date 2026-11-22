@@ -62,6 +62,9 @@ explicitly:
 - `WithFederated()` adds every federated grant to the local ones.
 - `FromIssuer(issuer)` keeps only the grants that issuer asserted, dropping the local ones.
 
+Both must open the chain: called after any other filter they fail closed and leave no
+licensed resources, so a narrowed chain is never widened again.
+
 ```go
 related, err := profile.
     WithFederated().

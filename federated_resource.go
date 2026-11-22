@@ -12,8 +12,14 @@ type FederatedResource struct {
 }
 
 // WithFederated adds every federated grant (issuer dropped) to the local
-// licensed resources.
+// licensed resources. It must come first in a chain: called after any other
+// filter it fails closed and leaves no licensed resources.
 func (p Profile) WithFederated() Profile {
+	if len(p.FilteringState) > 0 {
+		np := p.updateState("withFederated", "true")
+		np.LicensedResources = nil
+		return np
+	}
 	var grants []LicensedResource
 	if p.LicensedResources != nil {
 		grants = append(grants, p.LicensedResources.ToLicensesVector()...)
@@ -27,8 +33,14 @@ func (p Profile) WithFederated() Profile {
 }
 
 // FromIssuer keeps only the federated grants asserted by issuer, dropping the
-// local licensed resources.
+// local licensed resources. It must come first in a chain: called after any
+// other filter it fails closed and leaves no licensed resources.
 func (p Profile) FromIssuer(issuer uuid.UUID) Profile {
+	if len(p.FilteringState) > 0 {
+		np := p.updateState("issuer", issuer.String())
+		np.LicensedResources = nil
+		return np
+	}
 	var grants []LicensedResource
 	for _, r := range p.FederatedResources {
 		if r.Issuer == issuer {
